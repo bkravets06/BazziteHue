@@ -19,6 +19,7 @@ Two things here matter for how the app feels:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -37,6 +38,11 @@ WRITE_INTERVAL = 0.06
 IDLE_DISCONNECT = 120.0
 #: How long to hold a bulb when the user has asked to share it with other apps.
 SHARED_IDLE_DISCONNECT = 3.0
+#: A bulb held by a phone cannot be connected to at all, so a failed change is
+#: kept and retried on a widening delay until the bulb comes free.
+RETRY_BASE = 2.0
+RETRY_CEILING = 20.0
+MAX_RETRIES = 12
 
 
 @dataclass
@@ -49,6 +55,7 @@ class _Lamp:
     task: asyncio.Task | None = None
     wakeup: asyncio.Event | None = None
     connected: bool = False
+    failures: int = 0
 
 
 class BleWorker(QObject):
@@ -71,6 +78,7 @@ class BleWorker(QObject):
         super().__init__(parent)
         self.config = config
         self._lamps: dict[str, _Lamp] = {}
+        self._gate: asyncio.Semaphore | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -152,12 +160,18 @@ class BleWorker(QObject):
         if saved is None:
             return None
 
+        if self._gate is None:
+            # One connection attempt at a time across every bulb: BlueZ is
+            # unreliable when several are established at once on one adapter.
+            self._gate = asyncio.Semaphore(1)
+
         light = HueLight(
             saved.address,
             gamut=GAMUTS.get(saved.gamut.upper(), GAMUTS["C"]),
             alias=alias,
             timeout=15.0,
             retries=1,
+            gate=self._gate,
         )
         lamp = _Lamp(alias=alias, light=light)
         lamp.wakeup = asyncio.Event()
@@ -207,20 +221,47 @@ class BleWorker(QObject):
             try:
                 await self._ensure_connected(lamp)
                 await self._apply(lamp, payload)
+                lamp.failures = 0
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                lamp.connected = False
-                hint = getattr(exc, "hint", "") or ""
-                self.lamp_error.emit(lamp.alias, str(exc), hint)
-                self.lamp_status.emit(lamp.alias, "disconnected")
-                # Back off so a dead lamp cannot spin this loop.
-                await asyncio.sleep(1.0)
+                await self._handle_failure(lamp, payload, exc)
                 continue
 
             # Rate-limit: anything the user does during this pause is merged
             # into the next payload instead of queueing another write.
             await asyncio.sleep(WRITE_INTERVAL)
+
+    async def _handle_failure(self, lamp: _Lamp, payload: dict[str, Any], exc: Exception) -> None:
+        """Report a failed change and arrange to try it again.
+
+        The commonest reason a change fails is that a phone is holding the bulb,
+        which is temporary. Rather than throwing the user's change away, put it
+        back in the mailbox (behind anything newer) and retry on a widening
+        delay, so the bulb picks it up as soon as it comes free.
+        """
+        lamp.connected = False
+        lamp.failures += 1
+        with contextlib.suppress(Exception):
+            await lamp.light.disconnect()
+
+        hint = getattr(exc, "hint", "") or ""
+        self.lamp_error.emit(lamp.alias, str(exc), hint)
+        self.lamp_status.emit(lamp.alias, "disconnected")
+
+        if lamp.failures > MAX_RETRIES:
+            lamp.failures = 0
+            return
+
+        restored = dict(payload)
+        restored.update(lamp.pending)  # anything newer wins
+        lamp.pending = restored
+
+        delay = min(RETRY_CEILING, RETRY_BASE * (2 ** (lamp.failures - 1)))
+        self.lamp_status.emit(lamp.alias, f"waiting for the bulb (retry in {delay:.0f}s)")
+        await asyncio.sleep(delay)
+        if lamp.wakeup is not None:
+            lamp.wakeup.set()
 
     async def _ensure_connected(self, lamp: _Lamp) -> None:
         if lamp.light.is_connected:
@@ -325,6 +366,23 @@ class BleWorker(QObject):
     def refresh(self, aliases: Iterable[str]) -> None:
         """Read the real state back from the lamp."""
         self._queue(aliases, refresh=True)
+
+    def release(self, aliases: Iterable[str] | None = None) -> None:
+        """Drop the connection now, handing the bulb to whatever wants it next."""
+        wanted = list(aliases) if aliases is not None else None
+
+        async def run() -> None:
+            for alias, lamp in list(self._lamps.items()):
+                if wanted is not None and alias not in wanted:
+                    continue
+                lamp.pending.clear()
+                lamp.failures = 0
+                if lamp.light.is_connected:
+                    await lamp.light.disconnect()
+                lamp.connected = False
+                self.lamp_status.emit(alias, "released")
+
+        self._submit(run())
 
     # ------------------------------------------------------------------ #
     # One-off operations

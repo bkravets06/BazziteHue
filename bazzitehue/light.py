@@ -87,15 +87,14 @@ async def discover(timeout: float = 8.0, all_devices: bool = False) -> list[BLED
     return devices
 
 
-async def resolve_device(address: str, timeout: float = 8.0) -> BLEDevice | str:
-    """Return a :class:`BLEDevice` for ``address`` if a scan finds one.
+async def resolve_device(address: str, timeout: float = 8.0) -> BLEDevice | None:
+    """Return a :class:`BLEDevice` for ``address``, or None if it is not there.
 
-    bleak can connect to a bare address string on BlueZ when the adapter already
-    knows the device, so a failed scan is not fatal -- we hand the address back
-    and let the connection attempt decide.
+    A BLE central can only open a connection in response to a connectable
+    advertisement, so a bulb that does not turn up in a scan cannot be connected
+    to by any means -- there is no point falling back to a bare address.
     """
-    device = await BleakScanner.find_device_by_address(address, timeout=timeout)
-    return device or address
+    return await BleakScanner.find_device_by_address(address, timeout=timeout)
 
 
 class HueLight:
@@ -116,12 +115,17 @@ class HueLight:
         timeout: float = 20.0,
         retries: int = 2,
         alias: str | None = None,
+        gate: "asyncio.Semaphore | None" = None,
     ) -> None:
         self.address = address if isinstance(address, str) else address.address
         self.alias = alias
         self.gamut = gamut
         self.timeout = timeout
         self.retries = retries
+        # BlueZ copes badly with several connection attempts at once on one
+        # adapter, so callers driving multiple bulbs share a gate that lets one
+        # connection be established at a time. Established links run in parallel.
+        self.gate = gate
         self._target = address
         self._client: BleakClient | None = None
         self._notify_callbacks: list[Callable[[LightState], Awaitable[None] | None]] = []
@@ -139,45 +143,82 @@ class HueLight:
         if self.is_connected:
             return
 
-        target = self._target
-        if isinstance(target, str):
-            try:
-                target = await resolve_device(target, timeout=min(self.timeout, 10.0))
-            except Exception as exc:
-                # A scan can fail for reasons a direct connect survives (the
-                # adapter already knows the device), so this is not fatal yet.
-                log.debug("pre-connect scan for %s failed: %s", target, exc)
+        gate = self.gate if self.gate is not None else contextlib.nullcontext()
+        async with gate:  # type: ignore[union-attr]
+            await self._connect_once_serialised()
 
+    async def _connect_once_serialised(self) -> None:
+        """Find the bulb, then connect, retrying with a fresh scan each round.
+
+        bleak's BlueZ backend runs its own ``find_device_by_address`` whenever it
+        is handed a bare address, so resolving here first and passing the
+        resulting device avoids paying for two scans on every attempt.
+        """
+        if self.is_connected:
+            return
+
+        scan_timeout = min(self.timeout, 10.0)
+        device: BLEDevice | None = self._target if not isinstance(self._target, str) else None
         last_error: Exception | None = None
+        found_it = device is not None
+
         for attempt in range(self.retries + 1):
-            client = BleakClient(target, timeout=self.timeout)
+            if device is None:
+                try:
+                    resolved = await resolve_device(self.address, timeout=scan_timeout)
+                except Exception as exc:
+                    # The scan itself failing means the adapter is unwell, which
+                    # a connection attempt is not going to survive either.
+                    raise ConnectionFailedError(
+                        f"could not scan for {self.address}: {exc}",
+                        hint=(
+                            "Check that Bluetooth is on: 'bluetoothctl show' should "
+                            "list an adapter with Powered: yes."
+                        ),
+                    ) from exc
+
+                if resolved is None:
+                    log.debug("%s is not advertising (attempt %d)", self.address, attempt + 1)
+                    if attempt < self.retries:
+                        await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                device = resolved
+                found_it = True
+
+            client = BleakClient(device, timeout=self.timeout)
             try:
                 await client.connect()
                 self._client = client
+                # Remember the resolved device: reconnecting can then skip the scan.
+                self._target = device
                 log.debug("connected to %s on attempt %d", self.address, attempt + 1)
                 return
-            except Exception as exc:  # bleak raises a family of these
+            except Exception as exc:
                 last_error = exc
                 with contextlib.suppress(Exception):
                     await client.disconnect()
+                # The D-Bus path may be stale now, so scan again next round.
+                device = None
                 if attempt < self.retries:
-                    await asyncio.sleep(1.5 * (attempt + 1))
+                    await asyncio.sleep(1.0 * (attempt + 1))
 
-        message = f"could not connect to {self.address}: {last_error}"
-        if _looks_like_missing_device(last_error):
+        if not found_it or _looks_like_missing_device(last_error):
             raise DeviceNotFoundError(
-                message,
+                f"{self.address} is not advertising, so nothing can connect to it",
                 hint=(
-                    "The lamp is not advertising. Make sure it has power, is within "
-                    "a few metres, and is not already connected to a phone or a Hue "
-                    "Bridge. 'bazzitehue scan' lists what the adapter can see."
+                    "A Hue bulb takes one Bluetooth connection at a time, and stops "
+                    "advertising while it has one. Either something else is holding "
+                    "it (the Hue app on a phone is the usual culprit), or the bulb is "
+                    "out of range or unpowered. A Hue Bridge does not cause this — it "
+                    "uses Zigbee, not Bluetooth."
                 ),
             ) from last_error
+
         raise ConnectionFailedError(
-            message,
+            f"could not connect to {self.address}: {last_error}",
             hint=(
-                "Check that Bluetooth is on ('bluetoothctl show') and that the lamp "
-                "is not held open by another client."
+                "The bulb answered the scan but refused the connection. Moving closer "
+                "usually helps; so does power-cycling the bulb."
             ),
         ) from last_error
 

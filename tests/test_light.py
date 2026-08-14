@@ -29,6 +29,20 @@ WHITE_BULB_CHARS = {
 }
 
 
+class FakeDevice:
+    """Stands in for bleak's BLEDevice, which is what a real scan returns.
+
+    ``str()`` gives the address so the fake client can key its stores by it.
+    """
+
+    def __init__(self, address: str) -> None:
+        self.address = address
+        self.name = "Hue color lamp"
+
+    def __str__(self) -> str:
+        return self.address
+
+
 class FakeCharacteristic:
     def __init__(self, uuid: str) -> None:
         self.uuid = uuid
@@ -127,7 +141,7 @@ def fake_backend(monkeypatch):
     monkeypatch.setattr(light_module, "BleakClient", FakeClient)
 
     async def fake_resolve(address, timeout=8.0):
-        return address
+        return FakeDevice(address)
 
     monkeypatch.setattr(light_module, "resolve_device", fake_resolve)
     yield FakeClient
@@ -167,6 +181,101 @@ class TestConnection:
     async def test_operations_require_a_connection(self):
         with pytest.raises(ConnectionFailedError):
             await HueLight(ADDRESS).get_power()
+
+    async def test_it_resolves_once_and_reuses_the_device(self, monkeypatch):
+        """bleak rescans internally when handed a bare address, so resolve first."""
+        calls = []
+        real_resolve = light_module.resolve_device
+
+        async def counting(address, timeout=8.0):
+            calls.append(address)
+            return await real_resolve(address, timeout=timeout)
+
+        monkeypatch.setattr(light_module, "resolve_device", counting)
+
+        light = HueLight(ADDRESS)
+        await light.connect()
+        assert len(calls) == 1
+
+        # A later reconnect reuses the resolved device instead of scanning again.
+        await light.disconnect()
+        await light.connect()
+        assert len(calls) == 1
+
+    async def test_a_bulb_that_is_not_advertising_says_why(self, monkeypatch, no_sleep):
+        async def nothing_found(address, timeout=8.0):
+            return None
+
+        monkeypatch.setattr(light_module, "resolve_device", nothing_found)
+
+        with pytest.raises(light_module.DeviceNotFoundError) as caught:
+            await HueLight(ADDRESS, retries=1).connect()
+
+        hint = caught.value.hint or ""
+        assert "one Bluetooth connection at a time" in hint
+        assert "phone" in hint
+        # A Bridge is Zigbee and must not be blamed for this.
+        assert "Zigbee, not Bluetooth" in hint
+
+    async def test_a_broken_adapter_is_not_mistaken_for_a_missing_bulb(self, monkeypatch):
+        async def broken(address, timeout=8.0):
+            raise OSError("No such file or directory")
+
+        monkeypatch.setattr(light_module, "resolve_device", broken)
+
+        with pytest.raises(ConnectionFailedError) as caught:
+            await HueLight(ADDRESS, retries=0).connect()
+        assert "bluetoothctl" in (caught.value.hint or "")
+
+    async def test_the_gate_serialises_connection_attempts(self, monkeypatch):
+        """BlueZ is unreliable when several connects run at once on one adapter."""
+        active = 0
+        peak = 0
+        original = FakeClient.connect
+
+        async def slow_connect(self):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            try:
+                await asyncio.sleep(0.02)
+                await original(self)
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(FakeClient, "connect", slow_connect)
+
+        gate = asyncio.Semaphore(1)
+        lights = [
+            HueLight(ADDRESS, gate=gate),
+            HueLight("11:22:33:44:55:66", gate=gate),
+            HueLight("22:33:44:55:66:77", gate=gate),
+        ]
+        await asyncio.gather(*(light.connect() for light in lights))
+
+        assert peak == 1
+        assert all(light.is_connected for light in lights)
+
+    async def test_without_a_gate_connections_overlap(self, monkeypatch):
+        active = 0
+        peak = 0
+        original = FakeClient.connect
+
+        async def slow_connect(self):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            try:
+                await asyncio.sleep(0.02)
+                await original(self)
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(FakeClient, "connect", slow_connect)
+
+        lights = [HueLight(ADDRESS), HueLight("11:22:33:44:55:66")]
+        await asyncio.gather(*(light.connect() for light in lights))
+        assert peak == 2
 
     async def test_pairing(self):
         light = await connected_light()

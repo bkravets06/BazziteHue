@@ -138,11 +138,20 @@ def state_to_dict(state: LightState, alias: str | None) -> dict[str, object]:
 
 
 def build_lights(config: Config, target: str | None, timeout: float) -> list[HueLight]:
+    # One connection attempt at a time: BlueZ is flaky when several are
+    # established at once, and these lamps are usually driven together.
+    gate = asyncio.Semaphore(1)
     lights = []
     for alias, saved in config.resolve(target):
         gamut = GAMUTS.get(saved.gamut.upper(), GAMUTS["C"])
         lights.append(
-            HueLight(saved.address, gamut=gamut, timeout=timeout, alias=alias or saved.name)
+            HueLight(
+                saved.address,
+                gamut=gamut,
+                timeout=timeout,
+                alias=alias or saved.name,
+                gate=gate,
+            )
         )
     return lights
 

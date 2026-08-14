@@ -90,16 +90,33 @@ connection at all, so a bridged bulb can normally be driven from this app and th
 at the same time. Neither side is told what the other did, so the app may show a stale
 colour until it reconnects and re-reads — press the lamp picker again to refresh.
 
-**A phone talking Bluetooth is exclusive.** A Hue bulb accepts exactly one Bluetooth
-connection at a time, and while something holds it the bulb stops advertising entirely —
-it cannot be scanned for or connected to. That is the bulb's firmware, and no setting
-here can work around it. Whichever app got there first keeps it until it disconnects.
+**A phone talking Bluetooth is exclusive, and this cannot be worked around.** Two things
+combine to make it absolute:
 
-What this app *can* do is not be the one hogging it. It keeps a bulb connected while you
-are adjusting it, then lets go after two minutes idle. If you switch between this and the
-Hue phone app often, tick **Share bulbs with other apps** in the tray menu: the bulb is
-released a few seconds after each change instead. Commands then take a second or two
-longer, because each one reconnects first.
+1. Philips' firmware allows one Bluetooth connection at a time.
+2. A BLE connection can only be opened in response to a *connectable advertisement*, and
+   a bulb that already has a connection stops advertising.
+
+So while the phone holds the link, the bulb is not merely busy — it is invisible. No
+scan finds it and no connection attempt can reach it, from this app or any other. You can
+see this for yourself: with the Hue app connected, tick **Show every Bluetooth device**
+in Find bulbs and scan; the bulb is absent from the list entirely.
+
+What this app does instead is hand over quickly and take the bulb back the moment it is
+free. A change made while the bulb is busy is not thrown away: it is kept and retried on
+a widening delay (2 s, 4 s, 8 s, up to 20 s), so putting the phone down applies it within
+seconds. **Release bulbs now** in the tray menu disconnects immediately when you want to
+pick the phone up.
+
+If you want true simultaneous control from several devices, the Hue Bridge is the only
+route: it holds the bulbs over Zigbee and accepts commands from many clients at once over
+the network. That is a different protocol from what this tool speaks.
+
+By default the app keeps a bulb connected while you are adjusting it, then lets go after
+two minutes idle. If you switch between this and the Hue phone app often, tick **Share
+bulbs with other apps** in the tray menu: the bulb is released a few seconds after each
+change instead. Commands then take a second or two longer, because each one reconnects
+first.
 
 The command line tool always behaves this way — it connects, does the job, and
 disconnects — so it never blocks a phone.
@@ -271,6 +288,11 @@ back in, or run `update-desktop-database ~/.local/share/applications`.
 **Nothing happens for several seconds after a click.** Connecting to a bulb takes a
 moment, and the control window says `connecting…` while it does. Once connected, changes
 are immediate until the app lets go of the bulb after two minutes idle.
+
+**It says it is waiting for the bulb, and retrying.** The bulb is not advertising, so
+nothing can connect to it. Nine times out of ten something else holds it — the Hue app on
+a phone, often still connected in the background. Close that app, or power-cycle the
+bulb. The change you made is kept and applied as soon as the bulb answers.
 
 **`scan` finds nothing.** The bulb is probably already connected to something over
 Bluetooth — the Hue app on a phone in the room, most likely. A bulb with an open

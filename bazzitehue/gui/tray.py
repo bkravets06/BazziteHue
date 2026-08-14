@@ -107,6 +107,14 @@ class Tray(QObject):
                     )
                     scenes.addAction(action)
 
+        if aliases:
+            release = QAction("Release bulbs now", self.menu)
+            release.setToolTip(
+                "Disconnect immediately so a phone can take over without waiting."
+            )
+            release.triggered.connect(lambda: self.worker.release(aliases))
+            self.menu.addAction(release)
+
         self.menu.addSeparator()
         find = QAction("Find bulbs…", self.menu)
         find.triggered.connect(self.find_bulbs.emit)

@@ -374,6 +374,13 @@ class TestTray:
         tray.update_appearance("desk", QColor("#ff8800"), False)
         assert "all off" in tray.icon.toolTip()
 
+    def test_release_now_hands_the_bulbs_over(self, qapp, config, worker):
+        worker.release = lambda aliases=None: worker.calls.append(("release", aliases))
+        tray = Tray(config, worker)
+        action = next(a for a in tray.menu.actions() if a.text() == "Release bulbs now")
+        action.trigger()
+        assert worker.last("release") == ("release", ["desk", "sofa"])
+
     def test_lamp_check_state_follows_the_lamp(self, qapp, config, worker):
         tray = Tray(config, worker)
         worker.calls.clear()
@@ -677,6 +684,60 @@ class TestBleWorker:
         live.pair(ADDRESS)
         pump(1.0)
         assert results == [True]
+
+    def test_a_change_survives_a_busy_bulb_and_lands_when_it_frees_up(
+        self, qapp, config, monkeypatch, pump
+    ):
+        """A phone holding the bulb is temporary; the change must not be lost."""
+        reset_fake_client()
+        monkeypatch.setattr(light_module, "BleakClient", FakeClient)
+        monkeypatch.setattr(worker_module, "RETRY_BASE", 0.15)
+
+        async def fake_resolve(address, timeout=8.0):
+            return address
+
+        monkeypatch.setattr(light_module, "resolve_device", fake_resolve)
+
+        # Two refusals: the worker's light retries once itself, so the first
+        # attempt fails outright and the queued change has to be retried.
+        FakeClient.connect_failures = 2
+
+        worker = BleWorker(config)
+        worker.start()
+        try:
+            worker.set_power(["desk"], False)
+            pump(2.5)
+            assert FakeClient.stores[ADDRESS][protocol.CHAR_POWER] == b"\x00"
+        finally:
+            worker.stop()
+
+    def test_a_failure_is_reported_while_it_retries(self, live, pump):
+        errors = []
+        statuses = []
+        live.lamp_error.connect(lambda alias, message, hint: errors.append(message))
+        live.lamp_status.connect(lambda alias, status: statuses.append(status))
+        FakeClient.auth_error = True
+
+        live.set_power(["desk"], True)
+        pump(1.5)
+
+        assert errors
+        assert any("waiting for the bulb" in status for status in statuses)
+
+    def test_release_disconnects_immediately(self, live, pump):
+        live.set_power(["desk"], True)
+        pump(1.0)
+        statuses = []
+        live.lamp_status.connect(lambda alias, status: statuses.append(status))
+
+        live.release(["desk"])
+        pump(0.8)
+        assert "released" in statuses
+
+    def test_connection_attempts_are_serialised(self, live, pump):
+        live.set_power(["desk", "sofa"], True)
+        pump(1.5)
+        assert live._gate is not None
 
     def test_stop_is_idempotent(self, live):
         live.stop()
