@@ -63,8 +63,8 @@ class FakeWorker(QObject):
     def refresh(self, aliases):
         self.calls.append(("refresh", list(aliases)))
 
-    def scan(self, timeout=8.0):
-        self.calls.append(("scan", timeout))
+    def scan(self, timeout=8.0, all_devices=False):
+        self.calls.append(("scan", timeout, all_devices))
 
     def pair(self, address):
         self.calls.append(("pair", address))
@@ -401,6 +401,61 @@ class TestSuggestAlias:
         assert suggest_alias("Hue go", ADDRESS, {"go", "go-2"}) == "go-3"
 
 
+class TestSharing:
+    """Bulbs take one Bluetooth connection at a time, so letting go matters."""
+
+    def test_default_is_to_hold_the_connection(self, config):
+        assert config.share_mode is False
+
+    def test_share_mode_round_trips(self, config):
+        config.share_mode = True
+        config.save()
+        assert Config.load().share_mode is True
+
+    def test_worker_idle_timeout_follows_the_setting(self, qapp, config):
+        worker = BleWorker(config)
+        assert worker.idle_timeout == worker_module.IDLE_DISCONNECT
+        config.share_mode = True
+        assert worker.idle_timeout == worker_module.SHARED_IDLE_DISCONNECT
+
+    def test_tray_shows_the_current_setting(self, qapp, config, worker):
+        config.share_mode = True
+        tray = Tray(config, worker)
+        action = next(a for a in tray.menu.actions() if "Share" in a.text())
+        assert action.isChecked()
+
+    def test_tray_toggle_is_reported(self, qapp, config, worker):
+        tray = Tray(config, worker)
+        seen = []
+        tray.share_toggled.connect(seen.append)
+        action = next(a for a in tray.menu.actions() if "Share" in a.text())
+        action.setChecked(True)
+        assert seen == [True]
+
+    def test_sharing_releases_the_bulb_quickly(self, qapp, config, monkeypatch, pump):
+        reset_fake_client()
+        monkeypatch.setattr(light_module, "BleakClient", FakeClient)
+        monkeypatch.setattr(worker_module, "SHARED_IDLE_DISCONNECT", 0.2)
+
+        async def fake_resolve(address, timeout=8.0):
+            return address
+
+        monkeypatch.setattr(light_module, "resolve_device", fake_resolve)
+
+        config.share_mode = True
+        worker = BleWorker(config)
+        worker.start()
+        try:
+            statuses = []
+            worker.lamp_status.connect(lambda alias, status: statuses.append(status))
+            worker.set_power(["desk"], True)
+            pump(1.5)
+            assert "connected" in statuses
+            assert statuses[-1] == "disconnected"
+        finally:
+            worker.stop()
+
+
 class TestScanDialog:
     def test_lists_devices_and_marks_saved_ones(self, qapp, config, worker):
         dialog = ScanDialog(config, worker)
@@ -431,6 +486,57 @@ class TestScanDialog:
 
         assert "go" in Config.load().lights
         assert "pairing failed" in dialog.status.text().lower()
+        dialog.close()
+
+    def test_showing_every_device_is_passed_through(self, qapp, config, worker):
+        dialog = ScanDialog(config, worker)
+        assert worker.last("scan")[2] is False
+        dialog.show_everything.setChecked(True)
+        assert worker.last("scan")[2] is True
+        dialog.close()
+
+    def test_adding_by_address_saves_and_pairs(self, qapp, config, worker, monkeypatch):
+        dialog = ScanDialog(config, worker)
+        monkeypatch.setattr(
+            "bazzitehue.gui.dialogs.QInputDialog.getText",
+            lambda *a, **k: ("99:88:77:66:55:44", True),
+        )
+        dialog.add_by_address()
+
+        assert "99:88:77:66:55:44" in {
+            light.address for light in Config.load().lights.values()
+        }
+        assert worker.last("pair") == ("pair", "99:88:77:66:55:44")
+        dialog.close()
+
+    def test_adding_a_bad_address_is_refused(self, qapp, config, worker, monkeypatch):
+        dialog = ScanDialog(config, worker)
+        monkeypatch.setattr(
+            "bazzitehue.gui.dialogs.QInputDialog.getText", lambda *a, **k: ("nope", True)
+        )
+        warned = []
+        monkeypatch.setattr(
+            "bazzitehue.gui.dialogs.QMessageBox.warning", lambda *a, **k: warned.append(a)
+        )
+        dialog.add_by_address()
+
+        assert warned
+        assert worker.of("pair") == []
+        dialog.close()
+
+    def test_adding_an_address_already_saved_is_refused(self, qapp, config, worker, monkeypatch):
+        dialog = ScanDialog(config, worker)
+        monkeypatch.setattr(
+            "bazzitehue.gui.dialogs.QInputDialog.getText", lambda *a, **k: (ADDRESS, True)
+        )
+        told = []
+        monkeypatch.setattr(
+            "bazzitehue.gui.dialogs.QMessageBox.information", lambda *a, **k: told.append(a)
+        )
+        dialog.add_by_address()
+
+        assert told
+        assert worker.of("pair") == []
         dialog.close()
 
     def test_an_empty_scan_explains_itself(self, qapp, config, worker):

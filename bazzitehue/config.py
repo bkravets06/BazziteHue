@@ -55,6 +55,11 @@ class Config:
     lights: dict[str, SavedLight] = field(default_factory=dict)
     scenes: dict[str, Scene] = field(default_factory=dict)
     default: str | None = None
+    #: Release each bulb straight after a change instead of holding the
+    #: connection open. Slower to respond, but leaves the bulb free for a phone
+    #: or anything else that wants it -- a BLE bulb takes one connection at a
+    #: time.
+    share_mode: bool = False
 
     # ------------------------------------------------------------------ #
     # Persistence
@@ -78,7 +83,12 @@ class Config:
             alias: SavedLight(**entry) for alias, entry in (raw.get("lights") or {}).items()
         }
         scenes = {name: Scene(**entry) for name, entry in (raw.get("scenes") or {}).items()}
-        return cls(lights=lights, scenes=scenes, default=raw.get("default"))
+        return cls(
+            lights=lights,
+            scenes=scenes,
+            default=raw.get("default"),
+            share_mode=bool(raw.get("share_mode", False)),
+        )
 
     def save(self, path: Path | None = None) -> Path:
         path = path or config_path()
@@ -87,6 +97,7 @@ class Config:
             "lights": {alias: asdict(light) for alias, light in self.lights.items()},
             "scenes": {name: asdict(scene) for name, scene in self.scenes.items()},
             "default": self.default,
+            "share_mode": self.share_mode,
         }
         # Write via a temp file so an interrupted save cannot truncate the config.
         temp = path.with_suffix(".json.tmp")

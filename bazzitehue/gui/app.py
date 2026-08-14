@@ -77,6 +77,7 @@ class Application:
         self.tray.find_bulbs.connect(self._find_bulbs)
         self.tray.quit_requested.connect(self.quit)
         self.tray.autostart_toggled.connect(self._autostart_toggled)
+        self.tray.share_toggled.connect(self._share_toggled)
         self.window.lamps_changed.connect(self._lamps_changed)
         self.window.appearance_changed.connect(self.tray.update_appearance)
 
@@ -107,6 +108,11 @@ class Application:
 
     def _lamps_changed(self) -> None:
         self.tray.rebuild(autostart_enabled())
+
+    def _share_toggled(self, enabled: bool) -> None:
+        """Hold bulbs open for responsiveness, or let go for other apps."""
+        self.config.share_mode = enabled
+        self.config.save()
 
     def _autostart_toggled(self, enabled: bool) -> None:
         try:

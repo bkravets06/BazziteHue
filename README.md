@@ -75,8 +75,34 @@ Press **Find bulbs…**, pick yours from the list, and press **Pair and add**. T
 it and bonds with it — Hue bulbs only accept commands from a paired host. If pairing
 fails, switch the bulb off and on at the wall and try again.
 
-Bulbs currently connected to a phone or a Hue Bridge do not advertise and will not
-appear. Close the Hue app, or power-cycle the bulb, then scan again.
+If a bulb does not appear, see [sharing a bulb with your phone or a
+Bridge](#sharing-a-bulb-with-your-phone-or-a-bridge) below. Two escape hatches live in
+the same dialog: **Show every Bluetooth device**, for a bulb that has been renamed or
+does not advertise the Hue service, and **Add by address…**, for one whose address you
+already know.
+
+### Sharing a bulb with your phone or a Bridge
+
+These are two different radios in the bulb, and they behave differently.
+
+**A Hue Bridge talks Zigbee, not Bluetooth.** It does not occupy the Bluetooth
+connection at all, so a bridged bulb can normally be driven from this app and the Bridge
+at the same time. Neither side is told what the other did, so the app may show a stale
+colour until it reconnects and re-reads — press the lamp picker again to refresh.
+
+**A phone talking Bluetooth is exclusive.** A Hue bulb accepts exactly one Bluetooth
+connection at a time, and while something holds it the bulb stops advertising entirely —
+it cannot be scanned for or connected to. That is the bulb's firmware, and no setting
+here can work around it. Whichever app got there first keeps it until it disconnects.
+
+What this app *can* do is not be the one hogging it. It keeps a bulb connected while you
+are adjusting it, then lets go after two minutes idle. If you switch between this and the
+Hue phone app often, tick **Share bulbs with other apps** in the tray menu: the bulb is
+released a few seconds after each change instead. Commands then take a second or two
+longer, because each one reconnects first.
+
+The command line tool always behaves this way — it connects, does the job, and
+disconnects — so it never blocks a phone.
 
 ### The control window
 
@@ -209,9 +235,13 @@ key feels smooth instead of queueing hundreds of BLE writes.
   "scenes": {
     "cosy": { "color": "2200k", "brightness": 20.0, "power": true }
   },
-  "default": "desk"
+  "default": "desk",
+  "share_mode": false
 }
 ```
+
+`share_mode` is the tray menu's **Share bulbs with other apps**: when true, the app
+releases each bulb a few seconds after a change rather than holding it for two minutes.
 
 ### Exit codes
 
@@ -242,9 +272,10 @@ back in, or run `update-desktop-database ~/.local/share/applications`.
 moment, and the control window says `connecting…` while it does. Once connected, changes
 are immediate until the app lets go of the bulb after two minutes idle.
 
-**`scan` finds nothing.** The bulb is probably already connected to something — the Hue
-app on a phone in the room, or a Hue Bridge. Close the app, or power-cycle the lamp,
-then scan again. `bazzitehue scan --all` shows every BLE device, which tells you whether
+**`scan` finds nothing.** The bulb is probably already connected to something over
+Bluetooth — the Hue app on a phone in the room, most likely. A bulb with an open
+connection stops advertising, so nothing can find it. Close that app, or power-cycle the
+lamp, then scan again. (A Hue Bridge uses Zigbee and does not cause this.) `bazzitehue scan --all` shows every BLE device, which tells you whether
 the adapter is working at all.
 
 **"refused a read/write" / insufficient authentication.** The host is not bonded. Run
@@ -270,8 +301,9 @@ a full 2.4 GHz band helps; the tool retries connections twice by default and
 `--timeout` raises the per-attempt patience.
 
 **The bulb is not reachable from the Hue phone app while this is running.** A BLE bulb
-accepts one connection at a time. The app releases it after two minutes idle, or
-immediately when you quit from the tray menu.
+accepts one connection at a time. The app releases it after two minutes idle, immediately
+when you quit from the tray menu, or a few seconds after each change if you tick **Share
+bulbs with other apps**. See [sharing a bulb](#sharing-a-bulb-with-your-phone-or-a-bridge).
 
 **A command works but the bulb ignores part of it.** White-only and ambiance bulbs have
 no colour characteristic — `bazzitehue info` shows what a given lamp supports, and

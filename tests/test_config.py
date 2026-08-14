@@ -55,6 +55,21 @@ class TestPersistence:
         assert json.loads(path.read_text())["default"] == "desk"
 
 
+class TestShareMode:
+    def test_defaults_to_holding_the_connection(self):
+        assert Config().share_mode is False
+
+    def test_round_trips(self, path):
+        config = Config()
+        config.share_mode = True
+        config.save(path)
+        assert Config.load(path).share_mode is True
+
+    def test_an_older_config_without_the_key_still_loads(self, path):
+        path.write_text('{"lights": {}, "scenes": {}, "default": null}')
+        assert Config.load(path).share_mode is False
+
+
 class TestLights:
     def test_first_light_becomes_the_default(self):
         config = Config()

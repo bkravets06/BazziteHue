@@ -6,17 +6,20 @@ import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
 )
 
-from ..config import Config
+from ..config import Config, is_address
 from .worker import BleWorker
 
 SCAN_SECONDS = 8.0
@@ -63,11 +66,20 @@ class ScanDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 12)
 
         intro = QLabel(
-            "Bulbs already connected to a phone or a Hue Bridge stay hidden. "
-            "If yours does not appear, switch it off and on at the wall and scan again."
+            "A bulb that is currently connected to something else — the Hue app on a "
+            "phone, say — stops advertising and cannot be found. Close that app or "
+            "switch the bulb off and on at the wall, then scan again. A bulb paired to "
+            "a Hue Bridge talks Zigbee, not Bluetooth, so it should still show up."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
+
+        self.show_everything = QCheckBox("Show every Bluetooth device, not just Hue bulbs")
+        self.show_everything.setToolTip(
+            "Useful if a bulb has been renamed or does not advertise the Hue service."
+        )
+        self.show_everything.toggled.connect(lambda _: self.start_scan())
+        layout.addWidget(self.show_everything)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)  # indeterminate
@@ -86,6 +98,13 @@ class ScanDialog(QDialog):
         self.rescan_button = QPushButton("Scan again")
         self.rescan_button.clicked.connect(self.start_scan)
         buttons.addWidget(self.rescan_button)
+
+        self.manual_button = QPushButton("Add by address…")
+        self.manual_button.setToolTip(
+            "Type a bulb's Bluetooth address if you know it but it will not appear here."
+        )
+        self.manual_button.clicked.connect(self.add_by_address)
+        buttons.addWidget(self.manual_button)
         buttons.addStretch(1)
 
         self.add_button = QPushButton("Pair and add")
@@ -108,7 +127,29 @@ class ScanDialog(QDialog):
         self.progress.show()
         self.rescan_button.setEnabled(False)
         self.status.setText("Scanning…")
-        self.worker.scan(SCAN_SECONDS)
+        self.worker.scan(SCAN_SECONDS, self.show_everything.isChecked())
+
+    def add_by_address(self) -> None:
+        """Save a bulb by typing its address, for one that will not show up."""
+        text, accepted = QInputDialog.getText(
+            self, "Add by address", "Bluetooth address (AA:BB:CC:DD:EE:FF):"
+        )
+        if not accepted:
+            return
+
+        address = text.strip().upper()
+        if not is_address(address):
+            QMessageBox.warning(
+                self, "Not an address", f"“{text}” is not a Bluetooth address."
+            )
+            return
+
+        known = {light.address.upper() for light in self.config.lights.values()}
+        if address in known:
+            QMessageBox.information(self, "Already saved", "That bulb is already saved.")
+            return
+
+        self._save_and_pair(address, "")
 
     def _scan_finished(self, devices: list[tuple[str, str]]) -> None:
         self.progress.hide()
@@ -149,6 +190,9 @@ class ScanDialog(QDialog):
             return
 
         address, name = items[0].data(Qt.UserRole)
+        self._save_and_pair(address, name)
+
+    def _save_and_pair(self, address: str, name: str) -> None:
         alias = suggest_alias(name, address, set(self.config.lights))
         self.config.add_light(alias, address, name=name or None)
         self.config.save()

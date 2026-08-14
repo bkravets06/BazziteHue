@@ -26,6 +26,7 @@ class Tray(QObject):
     find_bulbs = Signal()
     quit_requested = Signal()
     autostart_toggled = Signal(bool)
+    share_toggled = Signal(bool)
 
     def __init__(self, config: Config, worker: BleWorker, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -110,6 +111,16 @@ class Tray(QObject):
         find = QAction("Find bulbs…", self.menu)
         find.triggered.connect(self.find_bulbs.emit)
         self.menu.addAction(find)
+
+        share = QAction("Share bulbs with other apps", self.menu)
+        share.setCheckable(True)
+        share.setChecked(self.config.share_mode)
+        share.setToolTip(
+            "Release each bulb straight after a change so the Hue phone app can "
+            "reach it. Slightly slower to respond."
+        )
+        share.toggled.connect(self.share_toggled.emit)
+        self.menu.addAction(share)
 
         autostart = QAction("Start at login", self.menu)
         autostart.setCheckable(True)

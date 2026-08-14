@@ -10,9 +10,10 @@ Two things here matter for how the app feels:
   accept writes, so each lamp applies the most recent value at most every
   ``WRITE_INTERVAL`` seconds and throws away everything superseded in between.
 * **Idle disconnect.** The link is kept open while you are actively adjusting a
-  lamp (connecting costs seconds), but dropped after ``IDLE_DISCONNECT``
-  seconds, because a bulb held open by this app cannot be reached by the Hue
-  phone app or anything else.
+  lamp (connecting costs seconds), but dropped once idle, because a BLE bulb
+  accepts one connection at a time: while this app holds it, the Hue phone app
+  cannot reach the bulb at all. ``Config.share_mode`` shortens that wait to a
+  few seconds, trading responsiveness for getting out of the way quickly.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ log = logging.getLogger(__name__)
 
 WRITE_INTERVAL = 0.06
 IDLE_DISCONNECT = 120.0
+#: How long to hold a bulb when the user has asked to share it with other apps.
+SHARED_IDLE_DISCONNECT = 3.0
 
 
 @dataclass
@@ -130,6 +133,11 @@ class BleWorker(QObject):
         if loop is not None and loop.is_running():
             loop.call_soon_threadsafe(function)
 
+    @property
+    def idle_timeout(self) -> float:
+        """How long to keep a bulb connected with nothing to do."""
+        return SHARED_IDLE_DISCONNECT if self.config.share_mode else IDLE_DISCONNECT
+
     # ------------------------------------------------------------------ #
     # Lamp registry
     # ------------------------------------------------------------------ #
@@ -179,7 +187,7 @@ class BleWorker(QObject):
         assert lamp.wakeup is not None
         while not self._closing:
             try:
-                await asyncio.wait_for(lamp.wakeup.wait(), timeout=IDLE_DISCONNECT)
+                await asyncio.wait_for(lamp.wakeup.wait(), timeout=self.idle_timeout)
             except asyncio.TimeoutError:
                 # Nothing wanted for a while: let go of the bulb so other apps
                 # (and the Hue phone app) can reach it.
@@ -322,10 +330,10 @@ class BleWorker(QObject):
     # One-off operations
     # ------------------------------------------------------------------ #
 
-    def scan(self, timeout: float = 8.0) -> None:
+    def scan(self, timeout: float = 8.0, all_devices: bool = False) -> None:
         async def run() -> None:
             try:
-                devices = await discover(timeout=timeout)
+                devices = await discover(timeout=timeout, all_devices=all_devices)
                 self.scan_finished.emit([(d.address, d.name or "") for d in devices])
             except Exception as exc:
                 self.scan_failed.emit(str(exc), _adapter_hint(exc))
