@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bazzitehue"
+version = "1.0.0"
+description = "Control Philips Hue bulbs over Bluetooth LE on Bazzite/Fedora -- no bridge, no Wi-Fi"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["philips-hue", "bluetooth", "ble", "bazzite", "fedora", "linux"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Home Automation",
+]
+dependencies = ["bleak>=0.21"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+bazzitehue = "bazzitehue.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/bkravets06/BazziteHue"
+
+[tool.setuptools]
+packages = ["bazzitehue"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
