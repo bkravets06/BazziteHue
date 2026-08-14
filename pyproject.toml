@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bazzitehue"
 version = "1.0.0"
-description = "Control Philips Hue bulbs over Bluetooth LE on Bazzite/Fedora -- no bridge, no Wi-Fi"
+description = "Desktop app and CLI for Philips Hue bulbs over Bluetooth LE on Bazzite/Fedora -- no bridge, no Wi-Fi"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -21,16 +21,23 @@ classifiers = [
 dependencies = ["bleak>=0.21"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+# The desktop app. PySide6-Essentials rather than full PySide6: it leaves out
+# WebEngine and friends, which this app has no use for and which quadruple the
+# download.
+gui = ["PySide6-Essentials>=6.6"]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "PySide6-Essentials>=6.6"]
 
 [project.scripts]
 bazzitehue = "bazzitehue.cli:main"
+
+[project.gui-scripts]
+bazzitehue-gui = "bazzitehue.gui.app:main"
 
 [project.urls]
 Homepage = "https://github.com/bkravets06/BazziteHue"
 
 [tool.setuptools]
-packages = ["bazzitehue"]
+packages = ["bazzitehue", "bazzitehue.gui"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,26 +1,30 @@
 # BazziteHue
 
-Control Philips Hue bulbs from the terminal over **Bluetooth LE** — no Hue Bridge, no
+A desktop app for controlling Philips Hue bulbs over **Bluetooth LE** — no Hue Bridge, no
 Wi-Fi, no Philips account, no cloud round-trip. Built for [Bazzite](https://bazzite.gg)
 (and any other Fedora/Linux system with BlueZ).
 
-Full colour control: hex, RGB, HSV/HSL, raw CIE xy, colour temperature in Kelvin or
-mireds, brightness 0–100 %, software fades, saved scenes, and an interactive terminal
-UI you can drive with the arrow keys.
+It lives in the panel — the top bar on GNOME, the system tray on KDE — so bulbs are one
+click away: toggle them from the menu, or open the control window for the colour wheel,
+brightness, white temperature and scenes. Everything, including finding and pairing new
+bulbs, is done from the app; the terminal is optional.
+
+A full command line tool ships alongside it for scripting and keyboard shortcuts.
 
 ```console
-$ bazzitehue scan
-AA:BB:CC:DD:EE:FF  Hue color lamp
-
-$ bazzitehue add desk AA:BB:CC:DD:EE:FF --pair
-Saved desk -> AA:BB:CC:DD:EE:FF (gamut C)
-Paired.
-
-$ bazzitehue color "#ff6a00" -b 45 --on
-desk: xy(0.5843, 0.3878) ≈ #ff6a00, 45%
+$ ./install.sh          # then launch "BazziteHue" from your app menu
 ```
 
----
+## Contents
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [The app](#the-app)
+- [Command line](#command-line)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [How it works](#how-it-works)
+- [Development](#development)
 
 ## Requirements
 
@@ -30,6 +34,7 @@ desk: xy(0.5843, 0.3878) ≈ #ff6a00, 45%
 | Python | 3.10 or newer (Bazzite ships one) |
 | Bluetooth | Any BLE-capable adapter, including the Steam Deck's internal radio |
 | Bulbs | Any Hue lamp with Bluetooth — essentially everything sold since 2019 (look for the Bluetooth logo on the box) |
+| Desktop | KDE Plasma or GNOME (Bazzite ships either); the panel applet uses the standard StatusNotifierItem interface |
 
 Nothing is layered onto the base image with `rpm-ostree`; the tool installs into a
 virtualenv under `~/.local`, which survives Bazzite image updates.
@@ -37,49 +42,74 @@ virtualenv under `~/.local`, which survives Bazzite image updates.
 ## Install
 
 ```bash
-git clone https://github.com/bkravets06/BazziteHue.git
+git clone -b claude/philips-hue-bluetooth-controller-qw4idn \
+    https://github.com/bkravets06/BazziteHue.git
 cd BazziteHue
 ./install.sh
 ```
 
-This creates `~/.local/share/bazzitehue/venv`, links `~/.local/bin/bazzitehue`, and adds
-a desktop entry so you can launch the TUI from the app grid (or from Steam's desktop
-mode). Make sure `~/.local/bin` is on your `PATH`.
+That creates a virtualenv under `~/.local/share/bazzitehue`, installs the app and the
+CLI, adds the launcher and icon to your app menu, and starts the panel applet at login.
+Nothing is layered onto the base image with `rpm-ostree`, so it survives Bazzite updates.
 
-Alternatives, if you prefer them:
+The app pulls in Qt (about 80 MB). If you only want the terminal tool:
 
 ```bash
-pipx install .          # or: pipx install git+https://github.com/bkravets06/BazziteHue
-uv tool install .
+./install.sh --cli-only
 ```
 
-## First run
+To remove everything it installed (your saved bulbs are left alone):
 
-1. **Put the bulb in range.** BLE is line-of-sight-ish; stay within a room.
-2. **Make sure nothing else owns it.** A bulb that is currently connected to the Hue
-   app or a Hue Bridge will not advertise. Power-cycle it (off/on at the switch) if the
-   scan comes up empty.
-3. **Scan and save:**
-   ```bash
-   bazzitehue scan
-   bazzitehue add desk AA:BB:CC:DD:EE:FF
-   ```
-4. **Pair.** Hue bulbs only accept commands from a *bonded* host:
-   ```bash
-   bazzitehue pair desk
-   ```
-   If that fails, do it manually — `bluetoothctl` then `pair AA:BB:CC:DD:EE:FF`,
-   `trust AA:BB:CC:DD:EE:FF`.
-5. **Use it:**
-   ```bash
-   bazzitehue on
-   bazzitehue brightness 70
-   bazzitehue color teal
-   ```
+```bash
+./install.sh --uninstall
+```
 
-The first saved lamp becomes the default, so `--light` is optional from then on.
+## The app
 
-## Commands
+Launch **BazziteHue** from the app menu, or run `bazzitehue-gui`. On first run the
+control window opens and the bulb icon appears in the panel.
+
+### Setting up a bulb
+
+Press **Find bulbs…**, pick yours from the list, and press **Pair and add**. That saves
+it and bonds with it — Hue bulbs only accept commands from a paired host. If pairing
+fails, switch the bulb off and on at the wall and try again.
+
+Bulbs currently connected to a phone or a Hue Bridge do not advertise and will not
+appear. Close the Hue app, or power-cycle the bulb, then scan again.
+
+### The control window
+
+| Control | What it does |
+|---|---|
+| Lamp picker | One bulb, or “all lamps” to drive them together |
+| Power | Big toggle at the top; the label says what clicking will do |
+| Brightness | 0–100 %, applied live as you drag |
+| Colour | Hue around the wheel, saturation towards the edge, plus preset swatches and a hex box |
+| White | Colour temperature from 2000 K (candle) to 6500 K (daylight), with a live preview |
+| Scene | Save the current look under a name and recall it later |
+
+Colour changes are sent as you drag, coalesced to about 16 updates a second — roughly
+what a Hue bulb can absorb — so the light tracks the slider instead of lagging behind a
+queue of stale values.
+
+### The panel applet
+
+Clicking the tray icon opens the control window. The menu has a checkbox per bulb, All
+on / All off, quick brightness steps, your scenes, and **Start at login** (on by default;
+untick it to stop the applet starting with your session). The icon takes on the colour of
+whichever bulb is lit, and goes hollow and grey when everything is off.
+
+Closing the control window leaves the applet running. **Quit BazziteHue** in the menu
+exits for real.
+
+The app holds a Bluetooth connection open only while you are using a bulb, and lets go
+after two minutes idle — otherwise nothing else, including the Hue phone app, could
+reach it.
+
+## Command line
+
+The CLI is installed alongside the app and shares the same saved bulbs and scenes.
 
 Every command takes `-l/--light <alias|address|a,b|all>`; without it, the default lamp
 is used. Flags work before or after the subcommand.
@@ -146,7 +176,7 @@ bazzitehue loop --speed 6 --duration 30
 bazzitehue status --json | jq '.[0].brightness_percent'
 ```
 
-### Interactive TUI
+### Interactive terminal UI
 
 ```bash
 bazzitehue tui
@@ -195,6 +225,23 @@ key feels smooth instead of queueing hundreds of BLE writes.
 
 ## Troubleshooting
 
+**The tray icon does not appear on GNOME.** GNOME hides StatusNotifierItem icons unless
+the AppIndicator extension is enabled:
+
+```bash
+gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
+```
+
+The app notices this at install time and says so. Until it is enabled, the control window
+still works — the app just falls back to opening it directly.
+
+**The launcher is missing from the app menu.** Some desktops cache the menu; log out and
+back in, or run `update-desktop-database ~/.local/share/applications`.
+
+**Nothing happens for several seconds after a click.** Connecting to a bulb takes a
+moment, and the control window says `connecting…` while it does. Once connected, changes
+are immediate until the app lets go of the bulb after two minutes idle.
+
 **`scan` finds nothing.** The bulb is probably already connected to something — the Hue
 app on a phone in the room, or a Hue Bridge. Close the app, or power-cycle the lamp,
 then scan again. `bazzitehue scan --all` shows every BLE device, which tells you whether
@@ -221,6 +268,10 @@ bluetoothctl show          # should list an adapter, Powered: yes
 with Wi-Fi and with your controllers. Keeping the lamp within a few metres and avoiding
 a full 2.4 GHz band helps; the tool retries connections twice by default and
 `--timeout` raises the per-attempt patience.
+
+**The bulb is not reachable from the Hue phone app while this is running.** A BLE bulb
+accepts one connection at a time. The app releases it after two minutes idle, or
+immediately when you quit from the tray menu.
 
 **A command works but the bulb ignores part of it.** White-only and ambiance bulbs have
 no colour characteristic — `bazzitehue info` shows what a given lamp supports, and
@@ -251,14 +302,17 @@ triangle (gamut C by default; pass `--gamut A` or `B` when saving an older lamp)
 
 ## Development
 
+
+
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m pytest
 ```
 
-The test suite runs without any hardware: the BLE client is replaced with a fake that
-records every write, so encoding, gamut clamping, fades, ordering and error handling are
-all covered offline.
+The test suite runs without any hardware or a display: the BLE client is replaced with a
+fake that records every write, and Qt runs on its offscreen platform. Encoding, gamut
+clamping, fades, CLI parsing, the curses input loop, the colour wheel geometry, the
+window's controls and the worker's coalescing are all covered.
 
 ```
 bazzitehue/
@@ -268,6 +322,15 @@ bazzitehue/
   config.py     saved lamps, aliases, scenes
   cli.py        argument parsing and output
   tui.py        curses interface
+  gui/
+    app.py      entry point: application, autostart, shutdown
+    worker.py   asyncio loop in a thread; coalesced writes, idle disconnect
+    window.py   the control window
+    tray.py     panel applet and its menu
+    dialogs.py  find-and-pair dialog
+    widgets.py  colour wheel, temperature bar, preview
+    icons.py    icons drawn with QPainter
+packaging/      .desktop entry and app icon
 ```
 
 ## Licence

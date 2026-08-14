@@ -59,6 +59,32 @@ def bold(text: str) -> str:
     return f"\x1b[1m{text}\x1b[0m" if use_color() else text
 
 
+_progress_width = 0
+
+
+def progress(message: str) -> None:
+    """Show what the tool is waiting on, in place, on stderr.
+
+    Connecting to a bulb can take the better part of a minute when it is out of
+    range, and silence for that long is indistinguishable from a hang. Written
+    to stderr and only when it is a terminal, so pipes and --json stay clean.
+    """
+    global _progress_width
+    if not sys.stderr.isatty():
+        return
+    padding = " " * max(0, _progress_width - len(message))
+    print(f"\r{message}{padding}", end="", file=sys.stderr, flush=True)
+    _progress_width = len(message)
+
+
+def clear_progress() -> None:
+    """Wipe the progress line before printing real output."""
+    global _progress_width
+    if _progress_width and sys.stderr.isatty():
+        print(f"\r{' ' * _progress_width}\r", end="", file=sys.stderr, flush=True)
+    _progress_width = 0
+
+
 def describe_state(state: LightState, alias: str | None) -> str:
     label = alias or state.name or state.address
     power = "on " if state.power else "off"
@@ -136,10 +162,14 @@ async def run_on_lights(
     lights = build_lights(config, target, timeout)
 
     async def run(light: HueLight) -> object:
+        label = light.alias or light.address
+        progress(f"connecting to {label}...")
         async with light:
+            progress(f"connected to {label}")
             return await action(light)
 
     results = await asyncio.gather(*(run(light) for light in lights), return_exceptions=True)
+    clear_progress()
 
     failures = 0
     for light, result in zip(lights, results):
@@ -763,6 +793,10 @@ def build_parser() -> argparse.ArgumentParser:
     dump = sub.add_parser("gatt-dump", help="print the lamp's GATT table (diagnostics)")
     dump.set_defaults(func=cmd_gatt_dump)
 
+    gui = sub.add_parser("gui", help="open the desktop app")
+    gui.add_argument("--tray", action="store_true", help="start in the panel, no window")
+    gui.set_defaults(func=None)
+
     for subparser in list(sub.choices.values()) + [
         scene_save,
         scene_apply,
@@ -774,12 +808,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def launch_gui(tray: bool = False) -> int:
+    """Hand over to the desktop app."""
+    try:
+        from .gui.app import main as gui_main
+    except ImportError as exc:
+        print(f"error: the desktop app is not installed ({exc})", file=sys.stderr)
+        print(
+            dim(
+                "Install it with:  pip install 'bazzitehue[gui]'\n"
+                "or re-run ./install.sh, which sets up the app and its launcher."
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    return gui_main(["--tray"] if tray else [])
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if getattr(args, "timeout", None) is None:
         args.timeout = 8.0 if args.command == "scan" else 20.0
+
+    if args.command == "gui":
+        # Qt runs its own event loop, so this must not go through asyncio.run().
+        return launch_gui(tray=args.tray)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,

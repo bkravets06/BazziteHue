@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=BazziteHue
+GenericName=Hue Bluetooth Control
+Comment=Control Philips Hue bulbs over Bluetooth — no bridge or Wi-Fi needed
+Exec=@EXEC@
+Icon=bazzitehue
+Terminal=false
+Categories=Utility;Settings;HardwareSettings;
+Keywords=hue;philips;light;lamp;bulb;bluetooth;
+StartupNotify=true
+StartupWMClass=bazzitehue
+SingleMainWindow=true
+Actions=Tray;
+
+[Desktop Action Tray]
+Name=Start in the background
+Exec=@EXEC@ --tray
